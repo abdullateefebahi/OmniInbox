@@ -5,7 +5,7 @@ import {
 } from 'lucide-react';
 import { Twitter, Linkedin, Instagram } from './icons';
 
-export default function UnifiedInbox({ initialThreads, updateThreads }) {
+export default function UnifiedInbox({ initialThreads, updateThreads, onSendMessageLive }) {
   const [threads, setThreads] = useState(initialThreads);
   const [activeThreadId, setActiveThreadId] = useState(initialThreads[0]?.id || null);
   const [searchQuery, setSearchQuery] = useState('');
@@ -75,6 +75,11 @@ export default function UnifiedInbox({ initialThreads, updateThreads }) {
 
     setThreads(updated);
     updateThreads(updated);
+
+    if (onSendMessageLive) {
+      onSendMessageLive(activeThreadId, replyText);
+    }
+
     setReplyText('');
     setAiDraft('');
   };

@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { 
   Inbox, Sparkles, Send, BarChart3, Settings, 
   MessageSquare, User, Bell, HelpCircle 
@@ -8,12 +8,13 @@ import Automations from './components/Automations';
 import Campaigns from './components/Campaigns';
 import Analytics from './components/Analytics';
 import SettingsView from './components/Settings';
+import { supabase, supabaseConfigured } from './supabaseClient';
 
 export default function App() {
   const [activeTab, setActiveTab] = useState('inbox');
   
-  // Preseeded mock threads data
-  const [threads, setThreads] = useState([
+  // Preseeded mock threads data as local fallback
+  const mockThreads = [
     {
       id: 1,
       sender: "Sarah Jenkins",
@@ -100,7 +101,110 @@ export default function App() {
         { id: 1, sender: "Elena Petrova", time: "June 15", isSent: false, text: "Hello! I'm getting a 500 error when trying to sync my Instagram account. Please help, this is breaking my workflow. I need to auto-reply to my fans." }
       ]
     }
-  ]);
+  ];
+
+  const [threads, setThreads] = useState(mockThreads);
+  const [isLoading, setIsLoading] = useState(false);
+
+  // Fetch threads from Supabase if configured
+  const fetchLiveThreads = async () => {
+    if (!supabaseConfigured) return;
+    setIsLoading(true);
+    try {
+      const { data, error } = await supabase
+        .from('threads')
+        .select(`
+          *,
+          messages (
+            id,
+            sender,
+            text,
+            time,
+            is_sent,
+            created_at
+          )
+        `)
+        .order('updated_at', { ascending: false });
+
+      if (error) throw error;
+
+      if (data) {
+        // Sort messages inside each thread by created_at ascending
+        const formattedThreads = data.map(thread => ({
+          ...thread,
+          messages: (thread.messages || []).sort((a, b) => new Date(a.created_at) - new Date(b.created_at))
+        }));
+        setThreads(formattedThreads);
+      }
+    } catch (err) {
+      console.error("Error fetching live threads:", err);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    if (supabaseConfigured) {
+      fetchLiveThreads();
+
+      // Subscribe to real-time changes
+      // When a thread or message changes, refresh the threads list
+      const threadsSubscription = supabase
+        .channel('supabase-realtime-feed')
+        .on(
+          'postgres_changes', 
+          { event: '*', schema: 'public', table: 'threads' }, 
+          () => { fetchLiveThreads(); }
+        )
+        .on(
+          'postgres_changes', 
+          { event: '*', schema: 'public', table: 'messages' }, 
+          () => { fetchLiveThreads(); }
+        )
+        .subscribe();
+
+      return () => {
+        supabase.removeChannel(threadsSubscription);
+      };
+    }
+  }, []);
+
+  // Write new sent message to Supabase
+  const handleSendMessageLive = async (threadId, text) => {
+    if (!supabaseConfigured) return;
+    try {
+      // 1. Insert message
+      const { error: msgErr } = await supabase
+        .from('messages')
+        .insert({
+          thread_id: threadId,
+          sender: 'Me',
+          text: text,
+          is_sent: true,
+          time: 'Just now'
+        });
+
+      if (msgErr) throw msgErr;
+
+      // 2. Update thread metadata
+      const { error: threadErr } = await supabase
+        .from('threads')
+        .update({
+          snippet: text,
+          unread: false,
+          time: 'Just now',
+          updated_at: new Date().toISOString()
+        })
+        .eq('id', threadId);
+
+      if (threadErr) throw threadErr;
+      
+      // Refresh local view immediately
+      await fetchLiveThreads();
+    } catch (err) {
+      console.error("Error sending message to live DB:", err);
+    }
+  };
 
   // Count unread threads for the sidebar badge
   const unreadCount = threads.filter(t => t.unread).length;
@@ -108,7 +212,13 @@ export default function App() {
   const renderContent = () => {
     switch (activeTab) {
       case 'inbox':
-        return <UnifiedInbox initialThreads={threads} updateThreads={setThreads} />;
+        return (
+          <UnifiedInbox 
+            initialThreads={threads} 
+            updateThreads={setThreads} 
+            onSendMessageLive={handleSendMessageLive} 
+          />
+        );
       case 'automations':
         return <Automations />;
       case 'campaigns':
@@ -118,7 +228,13 @@ export default function App() {
       case 'settings':
         return <SettingsView />;
       default:
-        return <UnifiedInbox initialThreads={threads} updateThreads={setThreads} />;
+        return (
+          <UnifiedInbox 
+            initialThreads={threads} 
+            updateThreads={setThreads} 
+            onSendMessageLive={handleSendMessageLive}
+          />
+        );
     }
   };
 
@@ -202,7 +318,22 @@ export default function App() {
       <main className="main-content">
         <header className="top-header">
           <div className="view-title-container">
-            <h1>{getHeaderTitle()}</h1>
+            <h1 style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+              {getHeaderTitle()}
+              {supabaseConfigured && (
+                <span style={{
+                  fontSize: '11px',
+                  background: 'rgba(16, 185, 129, 0.12)',
+                  color: 'var(--sentiment-positive)',
+                  border: '1px solid rgba(16, 185, 129, 0.2)',
+                  padding: '3px 8px',
+                  borderRadius: '12px',
+                  fontWeight: '500'
+                }}>
+                  Live Sync
+                </span>
+              )}
+            </h1>
           </div>
 
           <div className="header-actions">
